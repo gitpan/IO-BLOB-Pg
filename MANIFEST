@@ -1,0 +1,8 @@
+ChangeLog
+MANIFEST
+Makefile.PL
+README
+lib/IO/BLOB/Pg.pm
+t/realtest.t
+t/io.t
+t/sep.t
