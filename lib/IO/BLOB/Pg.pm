@@ -8,10 +8,14 @@ package IO::BLOB::Pg;
 require 5.005_03;
 use strict;
 use vars qw($VERSION $DEBUG $IO_CONSTANTS);
-$VERSION = "0.9";  # $Date: 2000/05/30 16:17:22 $
+$VERSION = "0.91";  # $Date: 2002/08/12 06:14:57 $
 
 use Symbol ();
 use Carp;
+use IO::Handle;
+
+my $SEEK_SET = &IO::Handle::SEEK_SET;
+my $SEEK_END = &IO::Handle::SEEK_END;
 
 sub new
 {
@@ -19,8 +23,7 @@ sub new
   my $self = bless Symbol::gensym(), ref($class) || $class;
 
   tie *$self, $self;
-  $self->open(@_);
-  $self;
+  return $self->open(@_) ? $self : undef;
 }
 
 sub open
@@ -49,6 +52,7 @@ sub open
   }
   *$self->{pos} = 0;
   *$self->{lno} = 0;
+
   $self;
 }
 
@@ -57,14 +61,13 @@ sub oid {
   return *$self->{id};
 }
 
-sub pad {}
-#  {
-#      my $self = shift;
-#      my $old = *$self->{pad};
-#      *$self->{pad} = substr($_[0], 0, 1) if @_;
-#      return "\0" unless defined($old) && length($old);
-#      $old;
-#  }
+sub pad {
+  my $self = shift;
+  my $old = *$self->{pad};
+  *$self->{pad} = substr($_[0], 0, 1) if @_;
+  return "\0" unless defined($old) && length($old);
+  $old;
+}
 
 sub dump
 {
@@ -97,6 +100,7 @@ sub close
     delete *$self->{buf};
     delete *$self->{pos};
     delete *$self->{lno};
+
     $self;
 }
 
@@ -161,38 +165,23 @@ sub printf
 }
 
 
-my($SEEK_SET, $SEEK_CUR, $SEEK_END);
-
-sub _init_seek_constants
-{
-    if ($IO_CONSTANTS) {
-	require IO::Handle;
-	$SEEK_SET = &IO::Handle::SEEK_SET;
-	$SEEK_CUR = &IO::Handle::SEEK_CUR;
-	$SEEK_END = &IO::Handle::SEEK_END;
-    } else {
-	$SEEK_SET = 0;
-	$SEEK_CUR = 1;
-	$SEEK_END = 2;
-    }
-}
-
-
 sub seek {
   my($self,$off,$whence) = @_;
   my $fh = *$self->{fh};
-  my $pos = *$self->{pos};
-
-  _init_seek_constants() unless defined $SEEK_SET;
+  my $pos;
 
   $pos = *$self->{dbi}->func($fh, $off, $whence, 'lo_lseek');
-  carp "Error during Seek: ", $DBI::errstr
+  carp "Error during seek: ", $DBI::errstr
     if $DBI::err || not defined $pos;
 
-  $pos = 0 if $pos < 0;
-#    $self->truncate($pos) if $pos > $len;  # extend file
-  *$self->{lno} = 0;
-  *$self->{pos} = $pos;
+  if(defined $pos && $pos < 0) {
+    $pos = 0;
+    *$self->{lno} = 0;
+  } elsif(defined $pos) {
+    *$self->{pos} = $pos;
+  }
+  return 1 if defined $pos;
+  return 0;
 }
 
 sub _length {
@@ -202,6 +191,7 @@ sub _length {
   $self->seek(0, 2);
   my $len = $self->tell;
   $self->seek($old, 0);
+
   return $len;
 }
 *length   = \&_length;
@@ -215,9 +205,10 @@ sub pos {
 	my $pos = shift || 0;
 	my $fh = *$self->{fh};
 	my $len = $self->_length;
-	$pos = $pos > $len ? $len : *$self->{dbi}->func($fh, $pos, $SEEK_SET, 'lo_lseek');
-	*$self->{lno} = 0;
+	$pos = $pos > $len ? $len : $pos;
+	*$self->{dbi}->func($fh, $pos, $SEEK_SET, 'lo_lseek');
 	*$self->{pos} = $pos;
+	*$self->{lno} = 0;
     }
     $old;
 }
@@ -272,7 +263,7 @@ sub getline
       if($idx > ($[ - 1)) {
 	*$self->{pos} += $idx + length($/) - $br;
 	$self->seek(*$self->{pos}, 0);
-	$ret .= substr($tmp, 0, $idx);
+	$ret .= substr($tmp, 0, $idx+length($/));
 	$. = ++*$self->{lno};
 	return $ret;
       } else {
@@ -281,6 +272,7 @@ sub getline
       }
     }
     $. = ++*$self->{lno};
+
     return $ret;
 }
 
@@ -304,22 +296,24 @@ sub input_line_number
     my $self = shift;
     my $old = *$self->{lno};
     *$self->{lno} = shift if @_;
+
     $old;
 }
 
-sub truncate {}
-#  {
-#    my $self = shift;
-#    my $len = shift || 0;
-#    my $fh = $self->{fh};
-#    if ($self->_length >= $len) {
-#      substr($fh, $len) = '';
-#      *$self->{pos} = $len if $len < *$self->{pos};
-#    } else {
-#      $$buf .= ($self->pad x ($len - length($$buf)));
-#    }
-#    $self;
-#  }
+sub truncate {
+  my $self = shift;
+  my $len = shift || 0;
+  my $fh = *$self->{fh};
+  if ($self->_length > $len) {
+    carp "Not Implemented";
+#    substr($fh, $len) = '';
+#    *$self->{pos} = $len if $len < *$self->{pos};
+  } elsif ($self->_length < $len) {
+    $self->seek(0, $SEEK_END);
+    $self->write($self->pad x ($len - $self->_length))
+  }
+  $self;
+}
 
 sub read
 {
@@ -439,7 +433,7 @@ IO::BLOB::Pg - Emulate IO::File interface for PostgreSQL Large Objects
  use IO::BLOB::Pg;
  use DBI;
 
- $dbh = DBI->connect("dbi:Pg:dbname=mah", "", "",
+ $dbh = DBI->connect("dbi:Pg:dbname=template1", "", "",
                      {RaiseError=>1,
                       AutoCommit=>0}) # <- Absolutely necessary!
  $io = IO::BLOB::Pg->new($dbi);	# Create a new blob
@@ -495,8 +489,7 @@ you get:
 
   <$lobjfd>
 
-I based this code on Gisle Aas' IO::String, so the interface is
-similar.
+I based this code on Gisle Aas' IO::String.
 
 The C<IO::BLOB::Pg> module provides an interface compatible with
 C<IO::File> as distributed with F<IO-1.20>, but the following methods
@@ -533,11 +526,8 @@ in another table.
 
 =item $io->pad( [$char] )
 
-*Currently, extending the Blob via seek() or truncate() is not
-possible.*
-
 The pad() method makes it possible to specify the padding to use if
-the object is extended by either the seek() or truncate() methods.  It
+the object is extended by either the truncate() method.  It
 is a single character and defaults to "\0".
 
 =item $io->pos( [$newpos] )

@@ -1,13 +1,20 @@
-print "1..1\n";
+use Test::More tests => 1;
 use IO::BLOB::Pg;
 use DBI;
 
-my $db;
-$db = DBI->connect("dbi:Pg:dbname=mah", "", "", {RaiseError=>1, AutoCommit => 0});
-die $DBI::errstr if $DBI::err;
-eval {
+SKIP:
+{
+  skip "No database information given", 1
+    unless -f "db-info";
+
+  require 'db-info';
+
+  my $db;
+  $db = DBI->connect("dbi:Pg:dbname=$My{dbname}", $My{user}, $My{pass},
+		     {RaiseError=>1, AutoCommit => 0});
+  die $DBI::errstr if $DBI::err;
   my $h = IO::BLOB::Pg->new($db);
-  $/ = "x";
+  local $/ = "x";
   print $h "\n";
   foreach (1..10) {
     print $h "$_", $/;
@@ -17,13 +24,13 @@ eval {
 
   $/ = "\n";
   $h = IO::BLOB::Pg->open($db, $id);
-  while(<$h>) { $line = $_ }
+  while (<$h>) {
+    $line = $_;
+  }
   $h->close;
-};
-$db->disconnect
-  if $db;
 
-my $error = $@ || "";
-print "not "
-  unless $error eq "" && $line eq "1x2x3x4x5x6x7x8x9x10x";
-print "ok 1\n";
+  $db->disconnect
+    if $db;
+
+  ok($line eq "1x2x3x4x5x6x7x8x9x10x", "EOL character works");
+}
